@@ -1,0 +1,54 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gateway-service
+
+  cloud:
+    gateway:
+      routes:
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/api/auth/**
+        - id: course-service
+          uri: ${COURSE_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/courses/**,/api/modules/**,/api/lessons/**
+        - id: enrollment-service
+          uri: ${ENROLLMENT_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/enrollments/**
+        - id: notification-service
+          uri: ${NOTIFICATION_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/api/notifications/**
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 10s
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # JWK Set публикует auth-service; подпись проверяется на gateway.
+          jwk-set-uri: ${AUTH_JWKS_URI:http://localhost:8081/api/auth/.well-known/jwks.json}
+
+lms:
+  cors:
+    # Web-интерфейс в compose отдаёт nginx (порт 8088) и проксирует /api на gateway,
+    # поэтому браузер видит один origin и CORS не участвует. Список нужен для режима
+    # разработки, когда SPA открыта отдельным статическим сервером (docs/UI.md).
+    # Никогда не задавать "*": access-токен хранится на клиенте.
+    allowed-origins: ${LMS_CORS_ALLOWED_ORIGINS:http://localhost:8088,http://127.0.0.1:8088,http://localhost:5500,http://127.0.0.1:5500,http://localhost:5173}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true

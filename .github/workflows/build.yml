@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Maven verify
+        run: mvn -B verify
+
+  web:
+    name: Web UI checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Зависимостей нет: интерфейс собран на нативных ES-модулях, поэтому
+      # install/build не нужны — сразу тесты.
+      - name: Unit tests
+        run: node test/run.js
+
+      - name: Syntax check of ES modules
+        run: |
+          status=0
+          for file in $(find js test scripts -name '*.js' -o -name '*.mjs'); do
+            node --check "$file" || status=1
+          done
+          exit $status
+
+      - name: Validate nginx config
+        working-directory: .
+        run: docker run --rm -v "$PWD/web/nginx.conf:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t

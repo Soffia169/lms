@@ -1,0 +1,15 @@
+{
+  "name": "lms-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Базовый web-интерфейс LMS: нативные ES-модули без сборки и зависимостей",
+  "type": "module",
+  "scripts": {
+    "test": "node test/run.js",
+    "e2e": "node test/ui-e2e.mjs",
+    "serve": "node scripts/dev-server.js"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}

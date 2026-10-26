@@ -1,0 +1,22 @@
+# Контекст сборки — корень репозитория (docker build -f infra/Dockerfile .)
+.git
+.gitignore
+.github
+.idea
+.vscode
+**/target
+**/keys
+**/*.iml
+**/*.log
+node_modules
+.env
+*.env
+!*.env.example
+README.md
+Architecture_Vision.md
+docs
+
+# В образ web попадают только index.html, css/ и js/ (см. infra/Dockerfile.web)
+web/test
+web/scripts
+web/package.json

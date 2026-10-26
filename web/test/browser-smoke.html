@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LMS · browser smoke</title>
+    <style>
+        body { font: 14px/1.5 ui-monospace, Consolas, monospace; margin: 0; padding: 24px; background: #0f1117; color: #e6e8f0; }
+        h1 { font: 600 18px/1.3 system-ui, sans-serif; margin: 0 0 6px; }
+        p.note { color: #9aa3b8; max-width: 80ch; }
+        form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 16px 0; padding: 14px; border: 1px solid #242b3d; border-radius: 10px; }
+        label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9aa3b8; }
+        input { padding: 6px 9px; border: 1px solid #334056; border-radius: 7px; background: #161c29; color: #e6e8f0; font: inherit; }
+        input[type=checkbox] { width: 16px; height: 16px; }
+        button { padding: 8px 14px; border: 1px solid #4f46e5; border-radius: 8px; background: #4f46e5; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+        pre { margin: 0; padding: 14px; border: 1px solid #242b3d; border-radius: 10px; background: #121724; white-space: pre-wrap; }
+        .pass { color: #4adeaa; }
+        .fail { color: #ff8a8a; }
+        .skip { color: #f0b45f; }
+    </style>
+</head>
+<body>
+<h1>Browser smoke: API этапа 1 из настоящего браузера</h1>
+<p class="note">
+    Проверяет тот же путь, которым ходит интерфейс: текущий origin → (/api) → gateway → сервисы.
+    Запускается вручную или автоматически:
+    <code>?auto=1&amp;email=admin@lms.local&amp;password=Admin123!&amp;write=1</code>.
+    Параметр <code>then=app</code> после успешных проверок сохраняет сессию и открывает каталог,
+    чтобы можно было снять DOM уже отрендерившегося приложения (headless-проверка).
+</p>
+
+<form id="form">
+    <label>Email <input id="email" type="email" autocomplete="username" required></label>
+    <label>Пароль <input id="password" type="password" autocomplete="current-password" required></label>
+    <label>Цикл записи <input id="write" type="checkbox"></label>
+    <button type="submit">Запустить проверки</button>
+</form>
+
+<pre id="log">Ожидание запуска…</pre>
+
+<script type="module">
+    import { SESSION_STORAGE_KEY } from '../js/core/session.js';
+    import { decodeJwt, tokenRoles } from '../js/core/jwt.js';
+
+    const params = new URLSearchParams(location.search);
+    const log = document.getElementById('log');
+    const lines = [];
+    let failed = 0;
+
+    const email = params.get('email') ?? '';
+    const password = params.get('password') ?? '';
+    const allowWrite = params.get('write') === '1';
+    const thenParam = params.get('then');
+
+    if (email) document.getElementById('email').value = email;
+    if (password) document.getElementById('password').value = password;
+    document.getElementById('write').checked = allowWrite;
+
+    document.getElementById('form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        void run({
+            email: document.getElementById('email').value,
+            password: document.getElementById('password').value,
+            write: document.getElementById('write').checked,
+            then: thenParam,
+        });
+    });
+
+    if (params.get('auto') === '1') {
+        void run({ email, password, write: allowWrite, then: thenParam });
+    }
+
+    function record(status, name, detail = '') {
+        const prefix = status === 'PASS' ? '✔ PASS' : status === 'SKIP' ? '— SKIP' : '✖ FAIL';
+        if (status === 'FAIL') failed += 1;
+        lines.push(`${prefix}  ${name}${detail ? ` — ${detail}` : ''}`);
+        render();
+    }
+
+    function render() {
+        log.textContent = lines.join('\n');
+        log.scrollTop = log.scrollHeight;
+    }
+
+    async function run({ email: userEmail, password: userPassword, write, then }) {
+        lines.length = 0;
+        failed = 0;
+        const startedAt = Date.now();
+        document.title = 'LMS · running';
+
+        const base = '/api';
+        let tokens = null;
+        let profile = null;
+        let createdCourseId = null;
+        let cleanupToken = null;
+        let firstCourseId = null;
+
+        try {
+            // 1. Публичный JWK-endpoint: gateway и auth-service живы.
+            const jwks = await call('GET', `${base}/auth/.well-known/jwks.json`, null, null, 200);
+            record(Array.isArray(jwks?.keys) && jwks.keys.length > 0 ? 'PASS' : 'FAIL',
+                'JWK Set auth-service', `${jwks?.keys?.length ?? 0} ключ(ей)`);
+
+            // 2. Логин.
+            tokens = await call('POST', `${base}/auth/login`, { email: userEmail, password: userPassword }, null, 200);
+            cleanupToken = tokens.accessToken;
+            record(tokens?.accessToken && tokens?.refreshToken ? 'PASS' : 'FAIL',
+                'POST /api/auth/login', `tokenType=${tokens?.tokenType}, expiresIn=${tokens?.expiresIn}s`);
+
+            const payload = decodeJwt(tokens.accessToken)?.payload;
+            const roles = tokenRoles(payload);
+            record(roles.length > 0 ? 'PASS' : 'FAIL', 'claims токена', `sub=${payload?.sub}, roles=${roles.join(',')}`);
+
+            // 3. Профиль.
+            profile = await call('GET', `${base}/auth/me`, null, tokens.accessToken, 200);
+            record(profile?.email ? 'PASS' : 'FAIL', 'GET /api/auth/me', `${profile?.fullName} · ${profile?.role}`);
+
+            // 4. Список курсов и фильтр по публикации.
+            const all = await call('GET', `${base}/courses`, null, tokens.accessToken, 200);
+            record(Array.isArray(all) ? 'PASS' : 'FAIL', 'GET /api/courses', `курсов: ${Array.isArray(all) ? all.length : '?'}`);
+
+            const published = await call('GET', `${base}/courses?published=true`, null, tokens.accessToken, 200);
+            const allPublished = Array.isArray(published) && published.every((course) => course.published === true);
+            record(allPublished ? 'PASS' : 'FAIL', 'GET /api/courses?published=true',
+                `опубликованных: ${Array.isArray(published) ? published.length : '?'}`);
+
+            if (Array.isArray(all) && all.length > 0) {
+                firstCourseId = all[0].id;
+                const detail = await call('GET', `${base}/courses/${all[0].id}`, null, tokens.accessToken, 200);
+                record(Array.isArray(detail?.modules) ? 'PASS' : 'FAIL', 'GET /api/courses/{id}',
+                    `модулей: ${detail?.modules?.length ?? '?'}`);
+            } else {
+                record('SKIP', 'GET /api/courses/{id}', 'в каталоге нет курсов');
+            }
+
+            // 5. Цикл записи (только для INSTRUCTOR/ADMIN).
+            if (!write) {
+                record('SKIP', 'цикл записи курс → модуль → урок → публикация', 'параметр write=1 не задан');
+            } else if (!roles.includes('INSTRUCTOR') && !roles.includes('ADMIN')) {
+                record('SKIP', 'цикл записи', 'роль не позволяет создавать курсы');
+            } else {
+                createdCourseId = await writeCycle(base, tokens.accessToken);
+            }
+
+            // 6. Ротация refresh-токена.
+            //    Access-токен может совпасть байт-в-байт: JWT собирается из
+            //    sub/roles/email/iat/exp с точностью до секунды, поэтому при
+            //    refresh в ту же секунду подпись и payload те же. Ротируется
+            //    именно refresh-токен — его и проверяем.
+            const rotated = await call('POST', `${base}/auth/refresh`, { refreshToken: tokens.refreshToken }, null, 200);
+            const accessRotated = rotated?.accessToken && rotated.accessToken !== tokens.accessToken;
+            const refreshRotated = rotated?.refreshToken && rotated.refreshToken !== tokens.refreshToken;
+            record(refreshRotated ? 'PASS' : 'FAIL', 'POST /api/auth/refresh (ротация)',
+                refreshRotated
+                    ? (accessRotated ? 'refresh-токен новый, access обновился' : 'refresh-токен новый, access совпал (та же секунда)')
+                    : 'refresh-токен не изменился');
+            tokens = rotated;
+            cleanupToken = rotated.accessToken;
+
+            const meAfterRefresh = await call('GET', `${base}/auth/me`, null, tokens.accessToken, 200);
+            record(meAfterRefresh?.id === profile?.id ? 'PASS' : 'FAIL', 'новый access-токен работает');
+
+            // 7. Сценарий для headless: сохранить сессию и открыть нужный экран.
+            //    then=app → каталог, then=/profile или /courses/:first → другой экран.
+            const thenRoute = then === 'app' ? '/catalog' : then;
+            if (thenRoute) {
+                localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken,
+                    savedAt: Date.now(),
+                    user: profile,
+                }));
+                record('PASS', 'сессия сохранена для UI', `переход на ${thenRoute}`);
+            } else {
+                // 8. Logout.
+                await call('POST', `${base}/auth/logout`, { refreshToken: tokens.refreshToken }, tokens.accessToken, 204);
+                record('PASS', 'POST /api/auth/logout', '204 No Content');
+                tokens = null;
+            }
+        } catch (error) {
+            record('FAIL', 'исключение', error?.message ?? String(error));
+        } finally {
+            // Уборка идёт после logout: access-токен ещё жив (отзывается только
+            // refresh), поэтому держим отдельную переменную cleanupToken.
+            if (createdCourseId) {
+                await call('DELETE', `${base}/courses/${createdCourseId}`, null, cleanupToken, 204)
+                    .catch((error) => record('FAIL', 'уборка тестового курса', error.message));
+            }
+        }
+
+        const verdict = failed === 0 ? 'PASS' : 'FAIL';
+        lines.push('', `RESULT: ${verdict} (${lines.filter((line) => line.startsWith('✔')).length} проверок, ${failed} ошибок, ${Date.now() - startedAt} мс)`);
+        render();
+        document.title = `RESULT: ${verdict}`;
+
+        const thenRoute = then === 'app' ? '/catalog' : then;
+        if (thenRoute && failed === 0) {
+            // :first — id первого курса из каталога (для проверки страницы курса).
+            location.replace(`/#${thenRoute.replace(':first', firstCourseId ?? '')}`);
+        }
+    }
+
+    async function writeCycle(base, token) {
+        const suffix = new Date().toISOString().slice(11, 19);
+        const course = await call('POST', `${base}/courses`, {
+            title: `UI smoke ${suffix}`,
+            description: 'Временный курс из browser-smoke; удаляется в конце проверки.',
+        }, token, 201);
+        record('PASS', 'POST /api/courses', course?.id ?? '');
+
+        const module = await call('POST', `${base}/courses/${course.id}/modules`, { title: 'Модуль 1' }, token, 201);
+        record(module?.id ? 'PASS' : 'FAIL', 'POST /api/courses/{id}/modules', `position=${module?.position}`);
+
+        const lesson = await call('POST', `${base}/modules/${module.id}/lessons`, {
+            title: 'Урок 1',
+            content: 'Содержимое урока из browser-smoke.',
+        }, token, 201);
+        record(lesson?.id ? 'PASS' : 'FAIL', 'POST /api/modules/{id}/lessons', `position=${lesson?.position}`);
+
+        const updated = await call('PUT', `${base}/lessons/${lesson.id}`, {
+            title: 'Урок 1 (изменён)',
+            content: 'Обновлённое содержимое.',
+            position: 0,
+        }, token, 200);
+        record(updated?.title === 'Урок 1 (изменён)' ? 'PASS' : 'FAIL', 'PUT /api/lessons/{id}', updated?.title ?? '');
+
+        const afterPublish = await call('POST', `${base}/courses/${course.id}/publish`, null, token, 200);
+        record(afterPublish?.published === true ? 'PASS' : 'FAIL', 'POST /api/courses/{id}/publish', `publishedAt=${afterPublish?.publishedAt}`);
+
+        const afterUnpublish = await call('POST', `${base}/courses/${course.id}/unpublish`, null, token, 200);
+        record(afterUnpublish?.published === false ? 'PASS' : 'FAIL', 'POST /api/courses/{id}/unpublish');
+
+        const detail = await call('GET', `${base}/courses/${course.id}`, null, token, 200);
+        const moduleCount = detail?.modules?.length ?? 0;
+        const lessonCount = detail?.modules?.[0]?.lessons?.length ?? 0;
+        record(moduleCount === 1 && lessonCount === 1 ? 'PASS' : 'FAIL', 'GET /api/courses/{id} после изменений',
+            `модулей: ${moduleCount}, уроков: ${lessonCount}`);
+
+        return course.id;
+    }
+
+    async function call(method, url, body, token, expectedStatus) {
+        const headers = { Accept: 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+
+        const response = await fetch(url, {
+            method,
+            headers,
+            body: body === null || body === undefined ? undefined : JSON.stringify(body),
+        });
+        const text = response.status === 204 ? '' : await response.text();
+        if (response.status !== expectedStatus) {
+            throw new Error(`${method} ${url} → ${response.status}, ожидался ${expectedStatus}: ${text.slice(0, 200)}`);
+        }
+        return text ? JSON.parse(text) : null;
+    }
+</script>
+</body>
+</html>

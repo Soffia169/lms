@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="LMS — учебная платформа: курсы, модули и уроки">
+    <title>LMS — учебная платформа</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234f46e5'/%3E%3Cpath d='M8 22V10h3.2v9.4H16V22H8Zm10.4 0V10h3.1l2.5 6.5 2.5-6.5h3.1v12h-2.9v-7l-2.1 5.4h-1.4l-2.1-5.4v7h-2.7Z' fill='white'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./css/app.css">
+    <script type="module" src="./js/main.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#view">Перейти к содержимому</a>
+
+<div class="app">
+    <div id="app-header"></div>
+    <main id="view" class="app-main" tabindex="-1">
+        <div class="page-loading" id="boot-state">
+            <span class="spinner" aria-hidden="true"></span>
+            <p>Загрузка интерфейса…</p>
+        </div>
+    </main>
+    <div id="app-footer"></div>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<noscript>
+    <div class="boot-error">
+        <h1>Нужен JavaScript</h1>
+        <p>Интерфейс LMS собран на нативных ES-модулях: включите JavaScript в браузере.</p>
+    </div>
+</noscript>
+
+<!-- Диагностика: если модуль не загрузился, пользователь видит причину, а не пустой экран. -->
+<script>
+    window.addEventListener('error', function (event) {
+        var state = document.getElementById('boot-state');
+        if (!state || !state.isConnected) { return; }
+        var message = (event.message || 'Неизвестная ошибка') + (event.filename ? ' — ' + event.filename : '');
+        while (state.firstChild) { state.removeChild(state.firstChild); }
+        var box = document.createElement('div');
+        box.className = 'alert alert--danger';
+        box.textContent = 'Не удалось загрузить интерфейс: ' + message;
+        var hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = 'Проверьте консоль браузера и что статика отдаётся с того же origin, что и /api (docs/UI.md).';
+        box.appendChild(hint);
+        state.appendChild(box);
+    });
+</script>
+</body>
+</html>
